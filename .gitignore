@@ -61,5 +61,6 @@ openspec/*
 .opencode/*
 .gemini/*
 .github/*
+.agent/*
 
 
