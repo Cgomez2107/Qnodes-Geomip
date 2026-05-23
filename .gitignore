@@ -63,4 +63,9 @@ openspec/*
 .github/*
 .agent/*
 
+# Large TPM files (>10MB) - regenerate via QNodes/generar_tpms.py
+QNodes/src/.samples/N20A.csv
+QNodes/src/.samples/N22A.csv
+QNodes/src/.samples/N25A.csv
+
 
