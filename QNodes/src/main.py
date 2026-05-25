@@ -1,28 +1,37 @@
 from src.controllers.manager import Manager
 
-# 👇 Importación de estrategias 👇 #
-from src.strategies.force import BruteForce
+from src.strategies.q_nodes import QNodes
 
 
 def iniciar():
     """Punto de entrada"""
 
-    # ABCD #
-    estado_inicial = "1000"
-    condiciones =    "1110"
-    alcance =        "1110"
-    mecanismo =      "1110"
+    estado_inicial = "1000000000000000000000000"
+    condiciones = "1111111111111111111111111"
+    alcance = "1111111111111111111111111"
+    mecanismo = "1111111111111111111111110"
 
     gestor_redes = Manager(estado_inicial)
     mpt = gestor_redes.cargar_red()
 
-    ### Ejemplo de solución mediante módulo de fuerza bruta ###
-    analizador_bf = BruteForce(mpt)
+    analizador = QNodes(mpt)
 
-    sia_cero = analizador_bf.aplicar_estrategia(
+    resultado = analizador.aplicar_estrategia(
         estado_inicial,
         condiciones,
         alcance,
         mecanismo,
     )
-    print(sia_cero)
+
+    import sys
+    import io
+    from colorama import deinit
+    deinit()
+
+    try:
+        sys.stdout = io.TextIOWrapper(io.BufferedWriter(sys.stdout.buffer), encoding='utf-8', errors='replace')
+        print(resultado)
+    except Exception as e:
+        print(f"Perdida minima = {resultado.phi}")
+        print(f"Partition = {resultado.partition}")
+        print(f"Segundos: {resultado.tiempo_ejecucion}")

@@ -45,12 +45,14 @@ EXEC_PY = PROYECTO / "QNodes" / "exec.py"
 MAIN_PY = PROYECTO / "QNodes" / "src" / "main.py"
 QNODES_DIR = PROYECTO / "QNodes"
 N_PRUEBAS = 10
-TIMEOUT = 1200
+TIMEOUT = 28800
 
 SHEETS = {
     "10A-Elementos": {"n_nodos": 10, "pagina": "A"},
     "15B-Elementos": {"n_nodos": 15, "pagina": "B"},
     "20A-Elementos": {"n_nodos": 20, "pagina": "A"},
+    "22A-Elementos": {"n_nodos": 22, "pagina": "A"},
+    "25A-Elementos ": {"n_nodos": 25, "pagina": "A"},  # trailing space in Excel
 }
 
 # -------------------------------------------------------------------
@@ -61,7 +63,7 @@ def setear_pagina_en_exec(pagina: str):
     with open(EXEC_PY, "r", encoding="utf-8") as f:
         content = f.read()
     content = re.sub(
-        r'set_pagina_red_muestra\("[A-Z]"\)',
+        r'set_pagina_red_muestra\s*\(\s*"[A-Z]"\s*\)',
         f'set_pagina_red_muestra("{pagina}")',
         content,
     )
@@ -73,22 +75,22 @@ def setear_parametros_en_main(estado_inicial, condiciones, alcance, mecanismo):
     with open(MAIN_PY, "r", encoding="utf-8") as f:
         content = f.read()
     content = re.sub(
-        r'estado_inicial = "[^"]*"',
+        r'estado_inicial\s*=\s*"[^"]*"',
         f'estado_inicial = "{estado_inicial}"',
         content,
     )
     content = re.sub(
-        r'condiciones = "[^"]*"',
+        r'condiciones\s*=\s*"[^"]*"',
         f'condiciones = "{condiciones}"',
         content,
     )
     content = re.sub(
-        r'alcance = "[^"]*"',
+        r'alcance\s*=\s*"[^"]*"',
         f'alcance = "{alcance}"',
         content,
     )
     content = re.sub(
-        r'mecanismo = "[^"]*"',
+        r'mecanismo\s*=\s*"[^"]*"',
         f'mecanismo = "{mecanismo}"',
         content,
     )
