@@ -115,6 +115,7 @@ class QNodes(SIA):
         self.indices_mecanismo: np.ndarray
 
         self.logger = SafeLogger(QNODES_STRAREGY_TAG)
+        self.restarts = 1  # random restarts >1 no mejoraron φ
 
     @profile(context={TYPE_TAG: QNODES_ANALYSIS_TAG})
     def aplicar_estrategia(
@@ -160,63 +161,39 @@ class QNodes(SIA):
 
     def algorithm(self, vertices: list[tuple[int, int]]):
         """
-        Implementa el algoritmo Q para encontrar la partición óptima de un sistema que minimiza la pérdida de información, basándose en principios de submodularidad dentro de la teoría de lainformación.
+        Implementa el algoritmo Q con Random Restarts.
 
-        El algoritmo opera sobre un conjunto de vértices que representan nodos en diferentes tiempos del sistema (presente y futuro). La idea fundamental es construir incrementalmente grupos de nodos que, cuando se particionan, producen la menor pérdida posible de información en el sistema.
-
-        Proceso Principal:
-        -----------------
-        El algoritmo comienza estableciendo dos conjuntos fundamentales: omega (W) y delta.
-        Omega siempre inicia con el primer vértice del sistema, mientras que delta contiene todos los vértices restantes. Esta decisión no es arbitraria - al comenzar con un
-        solo elemento en omega, podemos construir grupos de manera incremental evaluando cómo cada adición afecta la pérdida de información.
-
-        La ejecución se desarrolla en fases, ciclos e iteraciones, donde cada fase representa un nivel diferente y conlleva a la formación de una partición candidata, cada ciclo representa un incremento de elementos al conjunto W y cada iteración determina al final cuál es el mejor elemento/cambio/delta para añadir en W.
-        Fase >> Ciclo >> Iteración.
-
-        1. Formación Incremental de Grupos:
-        El algoritmo mantiene un conjunto omega que crece gradualmente en cada j-iteración. En cada paso, evalúa todos los deltas restantes para encontrar cuál, al unirse con omega produce la menor pérdida de información. Este proceso utiliza la función submodular para calcular la diferencia entre la EMD (Earth Mover's Distance) de la combinación y la EMD individual del delta evaluado.
-
-        2. Evaluación de deltas:
-        Para cada delta candidato el algoritmo:
-        - Calcula su EMD individual si no está en memoria.
-        - Calcula la EMD de su combinación con el conjunto omega actual
-        - Determina la diferencia entre estas EMDs (el "costo" de la combinación)
-        El delta que produce el menor costo se selecciona y se añade a omega.
-
-        3. Formación de Nuevos Grupos:
-        Al final de cada fase cuando omega crezca lo suficiente, el algoritmo:
-        - Toma los últimos elementos de omega y delta (par candidato).
-        - Los combina en un nuevo grupo
-        - Actualiza la lista de vértices para la siguiente fase
-        Este proceso de agrupamiento permite que el algoritmo construya particiones
-        cada vez más complejas y reutilice estos "pares candidatos" para particiones en conjunto.
-
-        Optimización y Memoria:
-        ----------------------
-        El algoritmo utiliza dos estructuras de memoria clave:
-        - individual_memory: Almacena las EMDs y distribuciones de nodos individuales, evitando recálculos muy costosos.
-        - partition_memory: Guarda las EMDs y distribuciones de las particiones completas, permitiendo comparar diferentes combinaciones de grupos teniendo en cuenta que su valor real está asociado al valor individual de su formación delta.
-
-        La memoización es relevante puesto muchos cálculos de EMD son computacionalmente costosos y se repiten durante la ejecución del algoritmo.
-
-        Resultado:
-        ---------------
-        Al terminar todas las fases, el algoritmo selecciona la partición que produjo la menor EMD global, representando la división del sistema que mejor preserva su información causal.
-
-        Args:
-            vertices (list[tuple[int, int]]): Lista de vértices donde cada uno es una
-                tupla (tiempo, índice). tiempo=0 para presente (t_0), tiempo=1 para futuro (t_1).
-
-        Returns:
-            tuple[float, tuple[tuple[int, int], ...]]: El valor de pérdida en la primera posición, asociado con la partición óptima encontrada, identificada por la clave en partition_memory que produce la menor EMD.
+        Ejecuta self.restarts veces con diferentes órdenes de vértices, acumulando
+        resultados en memoria (memoización cruzada entre restarts). Retorna la
+        partición con menor φ encontrada en cualquier restart.
         """
-        omegas_origen = np.array([vertices[0]])
-        deltas_origen = np.array(vertices[1:])
+        best_key = None
+        best_emd = float('inf')
 
-        vertices_fase = vertices
+        for restart in range(self.restarts):
+            if restart == 0:
+                v = list(vertices)
+            else:
+                rng = np.random.default_rng(restart * 137 + 42)
+                v = list(vertices)
+                rng.shuffle(v)
 
-        omegas_ciclo = omegas_origen
-        deltas_ciclo = deltas_origen
+            key = self._algorithm_run(v)
+            emd = self.memoria_particiones[key][0]
+            if emd < best_emd:
+                best_emd = emd
+                best_key = key
+                if best_emd == 0:
+                    return best_key
+
+        return best_key
+
+    def _algorithm_run(self, vertices: list[tuple[int, int]]):
+        """
+        Ejecución interna del algoritmo Q con un orden fijo de vértices.
+        Acumula resultados en self.memoria_particiones.
+        """
+        vertices_fase = list(vertices)
 
         total = len(vertices_fase) - 2
         for i in range(len(vertices_fase) - 2):
@@ -225,9 +202,9 @@ class QNodes(SIA):
             deltas_ciclo = vertices_fase[1:]
 
             emd_particion_candidata = INFTY_POS
+            dist_particion_candidata = None
 
             for j in range(len(deltas_ciclo) - 1):
-                # self.logger.critic(f"   {j=}")
                 emd_local = 1e5
                 indice_mip: int
 
@@ -243,12 +220,9 @@ class QNodes(SIA):
 
                     emd_particion_candidata = emd_delta
                     dist_particion_candidata = dist_marginal_delta
-                    ...
-                # self.logger.critic(f"       [k]: {indice_mip}")
 
                 omegas_ciclo.append(deltas_ciclo[indice_mip])
                 deltas_ciclo.pop(indice_mip)
-                ...
 
             self.memoria_particiones[
                 tuple(
@@ -272,7 +246,6 @@ class QNodes(SIA):
             omegas_ciclo.append(par_candidato)
 
             vertices_fase = omegas_ciclo
-            ...
 
         return min(
             self.memoria_particiones, key=lambda k: self.memoria_particiones[k][0]

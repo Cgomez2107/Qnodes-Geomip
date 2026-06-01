@@ -22,23 +22,26 @@ from src.middlewares.profile import profiler_manager, profile
 from src.models.core.solution import Solution
 import numpy as np
 import time
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 from concurrent.futures import ThreadPoolExecutor
 import itertools
 
+
 class GeometricSIA(SIA):
-    def __init__(self, gestor: Manager):
+    def __init__(self, gestor: Manager, beam_width: int = 1, timeout: Optional[float] = None):
         super().__init__(gestor)
         profiler_manager.start_session(
             f"{NET_LABEL}{len(gestor.estado_inicial)}{gestor.pagina}"
         )
         self.etiquetas = [tuple(s.lower() for s in ABECEDARY), ABECEDARY]
         self.logger = SafeLogger(GEOMETRIC_STRAREGY_TAG)
-        self.tabla_transiciones: dict ={}
-        self.vertices :set[tuple]
-        self.tabla :dict[int, list[tuple[int, int]]] = {}
+        self.tabla_transiciones: dict = {}
+        self.vertices: set[tuple]
+        self.tabla: dict[int, list[tuple[int, int]]] = {}
         self.memoria_particiones: dict[tuple[int, int], tuple[float, float]] = {}
+        self.beam_width = beam_width
+        self.timeout = timeout
 
     @profile(context={TYPE_TAG: GEOMETRIC_ANALYSIS_TAG})
     def aplicar_estrategia(
@@ -46,22 +49,10 @@ class GeometricSIA(SIA):
         condicion: str,
         alcance: str,
         mecanismo: str,
-        tpm: np.ndarray #! COMENTAR PARA UN SOLO ESTADO INICIAL
+        tpm: np.ndarray,
+        timeout: Optional[float] = None,
     ):
-        """ vamos a hacer que vaya desde el estado inicial hasta el final, bit a bit diferente, llenando la tabla primero para distancias hamming 1 hasta n, con n la cantidad de bits que cambian del estado inicial al final. para esto podemos usar una tabla de transiciones, donde cada fila es un estado y cada columna es un bit. la tabla de transiciones se llena con los estados que se pueden alcanzar desde el estado inicial, y luego se va llenando la tabla de distancias hamming. para esto vamos a usar una lista de listas, donde cada lista es una fila de la tabla de transiciones. la primera fila es el estado inicial, y las siguientes filas son los estados alcanzables desde el estado inicial. la última fila es el estado final.
-        paso a paso
-        1. cargar la matriz, pasar a ncubos
-        2. condicionar
-        3. obtener los bits que cambian entre el estado inicial y el final
-        4. obener vecinos del estado final que van hacia el estado inicial y calcular el costo de la transicion.
-        5. para cada vecino, obtener los vecinos que van hacia el estado inicial y calcular el costo de la transicion.
-        6. repetir hasta llegar al estado inicial.
-
-
-        nota: intentar llenar la tabla desde el estado final hacia atras, pues al contrario habra dependencia de los valores de la tabla de los estados que van en camino hacia el estado final
-        """
-        self.sia_preparar_subsistema(condicion, alcance, mecanismo, tpm) #! COMENTAR PARA UN SOLO ESTADO INICIAL
-        # self.sia_preparar_subsistema(condicion, alcance, mecanismo) #! DESCOMENTAR PARA UN SOLO ESTADO INICIAL
+        self.sia_preparar_subsistema(condicion, alcance, mecanismo, tpm)
 
         futuro = tuple(
             (EFECTO, efecto) for efecto in self.sia_subsistema.indices_ncubos
@@ -70,199 +61,164 @@ class GeometricSIA(SIA):
             (ACTUAL, actual) for actual in self.sia_subsistema.dims_ncubos
         )
 
-
-        self._flat_data = []
-        for idx, ncubo in enumerate(self.sia_subsistema.ncubos):
-            # garantías: ncubo.data.shape == (2,2,...,2)
-            # np.ravel() lo aplana. El orden ‘C’ equivale 
-            # a little-endian si tus tuples están invertidas.
-            self._flat_data.append(ncubo.data.ravel())
+        self._flat_matrix = np.stack([
+            ncubo.data.ravel() for ncubo in self.sia_subsistema.ncubos
+        ])
 
         self.vertices = set(presente + futuro)
         dims = self.sia_subsistema.dims_ncubos
         self.estado_inicial = self.sia_subsistema.estado_inicial[dims]
         self.estado_final = 1 - self.estado_inicial
-        mip = self.find_mip()
-        # print(mip)
+        self._pre_ini_idx = self._state_index(self.estado_inicial.tolist())
+        self._initial_probs = self._flat_matrix[:, self._pre_ini_idx].copy()
+        mip = self.find_mip(timeout=timeout or self.timeout)
         fmt_mip = fmt_biparte_q(list(mip), self.nodes_complement(mip))
 
         return Solution(
-            estrategia= GEOMETRIC_LABEL,
+            estrategia=GEOMETRIC_LABEL,
             perdida=self.memoria_particiones[mip][0],
             distribucion_subsistema=self.sia_dists_marginales,
             distribucion_particion=self.memoria_particiones[mip][1],
             tiempo_total=time.time() - self.sia_tiempo_inicio,
             particion=fmt_mip,
         )
-    
+
     def nodes_complement(self, nodes: list[tuple[int, int]]):
         return list(set(self.vertices) - set(nodes))
-    
-    def find_mip(self):
-        """
-        Implementa el algoritmo para encontrar la bipartición óptima
-        utilizando el enfoque geométrico-topológico.
-        """
+
+    def find_mip(self, timeout: Optional[float] = None):
         self.sia_logger.critic("empieza.")
         estado_inicial = self.estado_inicial
         estado_final = self.estado_final
         self.idx_ncubos = list(range(len(self.sia_subsistema.indices_ncubos)))
-        self.caminos: Dict[int, List[List[int]]] = {0: [estado_inicial.tolist()]}
-        self.tabla_transiciones[tuple(self.caminos[0][0]),tuple(self.caminos[0][0])] = [0.0 for _ in range(len(self.sia_subsistema.indices_ncubos))]
-        for nivel in range(1, len(estado_inicial)+1):
-            self.calcular_costos_nivel(estado_final,nivel)
+        init_list = estado_inicial.tolist()
+        self.caminos: Dict[int, List[List[int]]] = {0: [init_list]}
+        self.caminos_idx: Dict[int, List[int]] = {0: [self._pre_ini_idx]}
+        self._init_state_tuple = tuple(init_list)
+        n = len(estado_inicial)
+        n_ncubos = len(self.sia_subsistema.indices_ncubos)
+        init_key = (self._init_state_tuple, self._init_state_tuple)
+        self.tabla_transiciones[init_key] = np.zeros(n_ncubos, dtype=np.float64)
+        _t0 = time.time()
+        _check_interval = max(1, n // 4)
+        for nivel in range(1, n + 1):
+            self.calcular_costos_nivel(estado_final, nivel)
+            if timeout is not None and nivel % _check_interval == 0:
+                if time.time() - _t0 > timeout:
+                    self.sia_logger.critic(f"timeout {timeout}s en nivel {nivel}")
+                    break
         candidatos = self.identificar_particiones_optimas()
+        mejor_emd = float('inf')
+        mejor_key = None
         for idx, (presentes, futuros) in enumerate(candidatos):
+            if timeout is not None and idx % 5 == 0:
+                if time.time() - _t0 > timeout:
+                    self.sia_logger.critic(f"timeout {timeout}s evaluando candidato {idx}")
+                    break
             presentes = self.sia_subsistema.dims_ncubos[presentes]
             futuros = self.sia_subsistema.indices_ncubos[futuros]
-            dist =self.sia_subsistema.bipartir(futuros,presentes).distribucion_marginal()
+            dist = self.sia_subsistema.bipartir(futuros, presentes).distribucion_marginal()
             emd = emd_efecto(dist, self.sia_dists_marginales)
-            key = [(0,nodo) for nodo in presentes]
-            key.extend([(1,nodo) for nodo in futuros])
-            # print(fmt_biparte_q(list(key), self.nodes_complement(key)))
+            key = [(0, nodo) for nodo in presentes]
+            key.extend([(1, nodo) for nodo in futuros])
             self.memoria_particiones[tuple(key)] = (emd, dist)
-        return min(
-            self.memoria_particiones, key=lambda k: self.memoria_particiones[k][0]
-        )
-    
-    def calcular_costos_nivel(self,estado_final: np.ndarray, nivel):
-        n = len(estado_final)      
-        visitados:set[tuple] = set()
+            if emd < mejor_emd:
+                mejor_emd = emd
+                mejor_key = tuple(key)
+            if emd <= 1e-10:
+                self.mejor_mip = mejor_key
+                return mejor_key
+        self.mejor_mip = mejor_key
+        return mejor_key
+
+    def calcular_costos_nivel(self, estado_final: np.ndarray, nivel):
+        n = len(estado_final)
+        visitados: set[tuple] = set()
         self.caminos[nivel] = []
-        for estado_anterior in self.caminos[nivel - 1]:
-            estado_actual = np.array(estado_anterior)
+        self.caminos_idx[nivel] = []
+        prev_caminos = self.caminos[nivel - 1]
+        prev_indices = self.caminos_idx[nivel - 1]
+        for idx_s, estado_anterior in enumerate(prev_caminos):
+            idx_anterior = prev_indices[idx_s]
             for i in range(n):
-                if estado_actual[i] != estado_final[i]:
-                    nuevo_estado = estado_actual.copy()
-                    nuevo_estado[i] = estado_final[i]
+                if estado_anterior[i] != estado_final[i]:
+                    nuevo_estado = list(estado_anterior)
+                    nuevo_estado[i] = int(estado_final[i])
                     nuevo_estado_tuple = tuple(nuevo_estado)
                     if nuevo_estado_tuple not in visitados:
-                        self.caminos[nivel].append(nuevo_estado.tolist())
-                        self.calcular_costo(self.caminos[0][0],nuevo_estado.tolist(),self.idx_ncubos)
+                        nuevo_idx = idx_anterior ^ (1 << i)
+                        self.caminos[nivel].append(nuevo_estado)
+                        self.caminos_idx[nivel].append(nuevo_idx)
+                        self.calcular_costo(self._init_state_tuple, nuevo_estado_tuple, nuevo_idx)
                         visitados.add(nuevo_estado_tuple)
 
-    def calcular_costo(self, estado_inicial:tuple, estado_final:tuple, ncubos:list[int]):
-        """
-            Funcion encargada de calcular el costo de transicion de transicion del estado inicial al estado final
-            para las variables futuras definidas en ncubos
-            aplica la funcion de costo tx(i,j)= y(|X[i]-X[j]|+ sum(tx(k,j)))
-            donde:
-                - y es el factor de decrecimiento 1/2^(dh(i,j))
-                - dh(i,j) es la distancia hamming entre i y j
-                - X[i] es el valor de probabilida de transicion de un estado para cada variable futura
-                - sum(tx(i,k)) son todos costos de transicion de los vecinos de j que estan en un 
-                  camino optimo desde i
-        """
-        key = tuple(estado_inicial), tuple(estado_final)
-        if key not in self.tabla_transiciones:
-            self.tabla_transiciones[key] = [None]*len(self.sia_subsistema.indices_ncubos)
-        distancia_hamming = self.hamming(estado_inicial, estado_final)
-        factor = 1/(2**distancia_hamming)
-        # index_inicial = tuple(np.array(estado_inicial)[::-1])
-        # index_final = tuple(np.array(estado_final)[::-1])
+    @staticmethod
+    def _state_index(state: list) -> int:
+        idx = 0
+        for bit in reversed(state):
+            idx = (idx << 1) | bit
+        return idx
 
+    def calcular_costo(self, estado_inicial: tuple, estado_final: tuple, estado_fin_int: int):
+        distancia_hamming = self.hamming_ints(estado_inicial, estado_final)
+        factor = 1.0 / (1 << distancia_hamming)
 
-        estado_ini_int = int("".join(map(str, estado_inicial[::-1])), 2)
-        estado_fin_int = int("".join(map(str, estado_final[::-1])), 2)
+        diffs = np.abs(self._initial_probs - self._flat_matrix[:, estado_fin_int])
+        diffs *= factor
 
-        # Con eso, cada flat_data[idx][...] ya te da directamente X[i] o X[j].
-        diffs = np.abs(
-            np.array([flat[estado_ini_int] for flat in self._flat_data])
-        - np.array([flat[estado_fin_int] for flat in self._flat_data])
-        )
-        self.tabla_transiciones[key] = diffs.tolist()
-        # for idx in ncubos:
-        #     self.tabla_transiciones[key][idx] = (abs(self.sia_subsistema.ncubos[idx].data[index_inicial]-self.sia_subsistema.ncubos[idx].data[index_final]))
-        
         if distancia_hamming > 1:
             for i in range(len(estado_inicial)):
                 if estado_inicial[i] != estado_final[i]:
-                    nuevo_estado = estado_final.copy()
-                    nuevo_estado[i] = estado_inicial[i]
-                    nuevo_estado_tuple = tuple(nuevo_estado)
-                    temp_key = tuple(estado_inicial), nuevo_estado_tuple
-                    for n in ncubos:
-                        self.tabla_transiciones[key][n] = self.tabla_transiciones[key][n] + self.tabla_transiciones[temp_key][n]
-        tmp =[]
-        for i,n in enumerate(self.tabla_transiciones[key]):
-            if n is not None:
-                tmp.append(factor * n)
-            else:
-                tmp.append(n)
-        self.tabla_transiciones[key] = tmp
+                    inter = list(estado_final)
+                    inter[i] = estado_inicial[i]
+                    temp_key = estado_inicial, tuple(inter)
+                    diffs += self.tabla_transiciones[temp_key]
+
+        self.tabla_transiciones[(estado_inicial, estado_final)] = diffs
 
     def identificar_particiones_optimas(self):
-        """
-        Identifica las particiones óptimas basadas en los costos de transición
-        y las distancias Hamming entre los estados.
-        """
-        # idx_nivel_cero = 0
-        # idx_nivel_cero_2 = 1
-        # costo=1e5
-        key = tuple(self.caminos[0][0]), tuple(self.estado_final)
+        init_tuple = self._init_state_tuple
+        final_tuple = tuple(self.estado_final.tolist())
+        key = init_tuple, final_tuple
         costos: list = self.tabla_transiciones[key]
-        # print(f"costos nivel cero {costos}")
-        # for idx, valor in enumerate(costos):
-        #     if valor < costo:
-        #         costo = valor
-        #         idx_nivel_cero = idx
-        # presentes_nivel_cero = [i for i in range(len(self.estado_final))]
-        # furutros_nivel_cero = [i for i in range(len(self.sia_subsistema.indices_ncubos)) if i != idx_nivel_cero]
-        # candidatos = [[presentes_nivel_cero, furutros_nivel_cero]]
-        # pares = [(valor, idx) for idx, valor in enumerate(costos)]
-        # menores = heapq.nsmallest(len(self.estado_inicial), pares, key=lambda x: x[0])
         candidatos = []
         n_vars = len(costos)
         for idx in range(n_vars):
-            presentes = [i for i in range(len(self.estado_final))]
+            presentes = list(range(len(self.estado_final)))
             futuros = [i for i in range(n_vars) if i != idx]
             candidatos.append([presentes, futuros])
-        # _, idx_nivel_cero_1 = dos_menores[0]
-        # _, idx_nivel_cero_2 = dos_menores[1]
-        # print(idx_nivel_cero_1, idx_nivel_cero_2)
-        # presentes_1 = [i for i in range(n_vars)]
-        # futuros_1  = [i for i in range(n_vars) if i != idx_nivel_cero_1]
-        # presentes_2 = [i for i in range(n_vars)]
-        # futuros_2  = [i for i in range(n_vars) if i != idx_nivel_cero_2]
-        # candidatos = [
-        #     [presentes_1, futuros_1],
-        #     [presentes_2, futuros_2]
-        # ]
-        # print(f"candidatos nivel cero {candidatos}")
         es_par = len(self.caminos) % 2 == 0
         if es_par:
             mitad = len(self.caminos) // 2
         else:
             mitad = (len(self.caminos) // 2) + 1
-        for nivel in range(1,mitad):
-            # candidato_nivel = self.caminos[nivel][0]
-            costo_candidato_nivel = 1e5
-            presentes_nivel = []
-            futuros_nivel = []
+        init_list = self.caminos[0][0]
+        init_arr = np.array(init_list, dtype=np.int8)
+        for nivel in range(1, mitad):
+            candidatos_nivel = []
             for estado in self.caminos[nivel]:
-                # candidato = estado
-                costo_candidato = 0
-                presentes = []
-                futuros = []
-                actual = self.tabla_transiciones.get((tuple(self.caminos[0][0]), tuple(estado)), None)
-                estado_complementario = (1-np.array(estado)).tolist()
-                complementario = self.tabla_transiciones.get((tuple(self.caminos[0][0]), tuple(estado_complementario)), None)
-                for idx,i in enumerate(estado):
-                    if i == self.caminos[0][0][idx]:
-                        presentes.append(idx)
-                for idx,_ in enumerate(self.idx_ncubos):
-                    if actual[idx] <= complementario[idx]:
-                        futuros.append(idx)
-                        costo_candidato += actual[idx]
-                    else:
-                        costo_candidato += complementario[idx]
-                if costo_candidato < costo_candidato_nivel:
-                    # candidato_nivel = candidato
-                    costo_candidato_nivel = costo_candidato
-                    presentes_nivel = presentes
-                    futuros_nivel = futuros
-            candidatos.append([presentes_nivel, futuros_nivel])
+                estado_arr = np.array(estado, dtype=np.int8)
+                estado_tuple = tuple(estado)
+                actual = self.tabla_transiciones.get((init_tuple, estado_tuple), None)
+                comp_arr = 1 - estado_arr
+                comp_tuple = tuple(comp_arr.tolist())
+                complementario = self.tabla_transiciones.get((init_tuple, comp_tuple), None)
+                mask = actual is not None and complementario is not None
+                if not mask:
+                    continue
+                presentes = np.where(estado_arr == init_arr)[0].tolist()
+                futuros_mask = actual <= complementario
+                futuros = np.where(futuros_mask)[0].tolist()
+                costo = np.where(futuros_mask, actual, complementario).sum()
+                candidatos_nivel.append((costo, presentes, futuros))
+            candidatos_nivel.sort(key=lambda x: x[0])
+            for _, presentes, futuros in candidatos_nivel[:self.beam_width]:
+                candidatos.append([presentes, futuros])
         return candidatos
 
-    def hamming(self,a: List[int], b: List[int]) -> int:
+    def hamming(self, a: List[int], b: List[int]) -> int:
+        return sum(x != y for x, y in zip(a, b))
+
+    @staticmethod
+    def hamming_ints(a: tuple, b: tuple) -> int:
         return sum(x != y for x, y in zip(a, b))

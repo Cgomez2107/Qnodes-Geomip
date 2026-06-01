@@ -63,24 +63,48 @@ openspec/*
 .github/*
 .agent/*
 
-# Large TPM files (>10MB) - regenerate via QNodes/generar_tpms.py
-QNodes/src/.samples/N20A.csv
-QNodes/src/.samples/N22A.csv
-QNodes/src/.samples/N25A.csv
+# Logs (anywhere)
+**/.logs/
+.logs/
+*.log
 
-# Execution logs
-scripts/*.log
+# Profiling / review
+**/review/
+review/
 
 # Backups
 BACKUP_*
 *.qnodes_backup
+**/.backup/
 
-# Transient test files
+# Large TPM files (>1MB)
+QNodes/src/.samples/N20A.csv
+QNodes/src/.samples/N22A.csv
+QNodes/src/.samples/N25A.csv
+QNodes/src/.samples/N20A.npy
+QNodes/src/.samples/N22A.npy
+QNodes/src/.samples/N25A.npy
+GeoMIP/data/samples/N20A.csv
+GeoMIP/data/samples/N22A.csv
+GeoMIP/data/samples/N25A.csv
+GeoMIP/data/samples/N20A.npy
+GeoMIP/data/samples/N22A.npy
+GeoMIP/data/samples/N25A.npy
+
+# Old guide files (replaced by docs/)
+GUIA_COMPLETA_PROYECTO.md
+PLAN_MAESTRO_IMPLEMENTACION.md
+
+# Transient test / scratch files
 scripts/test_import*.py
 scripts/test_manual.py
 scripts/cross_seed.py
 scripts/run_geometric.py
+scripts/run_experiment.py
+scripts/utils/convert_to_npy.py
+scripts/tests/
 QNodes/check_excel.py
 QNodes/nul
+GeoMIP/src/Method2_Dynamic_Programming_Reformulation/test_manual.py
 
 

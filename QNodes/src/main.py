@@ -6,10 +6,10 @@ from src.strategies.q_nodes import QNodes
 def iniciar():
     """Punto de entrada"""
 
-    estado_inicial = "1000000000000000000000000"
-    condiciones = "1111111111111111111111111"
-    alcance = "1111111111111111111111111"
-    mecanismo = "1111111111111111111111110"
+    estado_inicial = "100000000000000"
+    condiciones = "111111111111111"
+    alcance = "111111111111110"
+    mecanismo = "011111111111111"
 
     gestor_redes = Manager(estado_inicial)
     mpt = gestor_redes.cargar_red()

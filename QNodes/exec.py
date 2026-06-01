@@ -8,10 +8,10 @@ def main():
 
     # 👇 Investiga en la clase `aplicación` para más configuraciones 👇 #
     aplicacion.activar_profiling()
-    aplicacion.set_pagina_red_muestra("A")
+    aplicacion.set_pagina_red_muestra("B")
 
     iniciar()
 
-
+ 
 if __name__ == "__main__":
     main()

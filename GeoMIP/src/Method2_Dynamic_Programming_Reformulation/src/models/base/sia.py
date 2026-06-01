@@ -47,7 +47,10 @@ class SIA(ABC):
         """
 
     def sia_cargar_tpm(self) -> np.ndarray:
-        """Carga TPM desde archivo"""
+        """Carga TPM desde archivo (prefiere .npy float32 sobre .csv float64)"""
+        npy_path = self.sia_gestor.tpm_filename.with_suffix(".npy")
+        if npy_path.exists():
+            return np.load(npy_path)
         return np.genfromtxt(
             self.sia_gestor.tpm_filename,
             delimiter=COLON_DELIM,

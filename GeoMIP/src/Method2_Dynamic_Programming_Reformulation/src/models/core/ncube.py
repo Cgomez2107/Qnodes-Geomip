@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numpy.typing import NDArray
 import numpy as np
 
@@ -15,6 +15,7 @@ class NCube:
     indice: int
     dims: NDArray[np.int8]
     data: np.ndarray
+    memo: dict[tuple[tuple[int, int], ...], np.ndarray] = field(default_factory=dict)
 
     def __post_init__(self):
         """Validación de tamaño y dimensionalidad tras inicialización.
@@ -72,11 +73,9 @@ class NCube:
         """
         numero_dims = self.dims.size
         seleccion = [slice(None)] * numero_dims
-        print(indices_condicionados)
         for condicion in indices_condicionados:
             level_arr = numero_dims - (condicion + 1)
             seleccion[level_arr] = estado_inicial[condicion]
-        print(tuple(seleccion))
 
         nuevas_dims = np.array(
             [dim for dim in self.dims if dim not in indices_condicionados],
@@ -133,21 +132,17 @@ class NCube:
         marginable_axis = np.intersect1d(ejes, self.dims)
         if not marginable_axis.size:
             return self
+        key = tuple(ejes.tolist()) if isinstance(ejes, np.ndarray) else tuple(ejes)
+        if key in self.memo:
+            data, new_dims = self.memo[key]
+            return NCube(data=data, dims=new_dims, indice=self.indice)
+        mask = np.isin(self.dims, marginable_axis)
         numero_dims = self.dims.size - 1
-        ejes_locales = tuple(
-            numero_dims - dim_idx
-            for dim_idx, axis in enumerate(self.dims)
-            if axis in marginable_axis
-        )
-        new_dims = np.array(
-            [d for d in self.dims if d not in marginable_axis],
-            dtype=np.int8,
-        )
-        return NCube(
-            data=np.mean(self.data, axis=ejes_locales, keepdims=False),
-            dims=new_dims,
-            indice=self.indice,
-        )
+        ejes_locales = tuple(numero_dims - np.where(mask)[0])
+        new_dims = self.dims[~mask].copy()
+        data = np.mean(self.data, axis=ejes_locales, keepdims=False)
+        self.memo[key] = (data, new_dims)
+        return NCube(data=data, dims=new_dims, indice=self.indice)
 
     def __str__(self) -> str:
         dims_str = f"dims={self.dims}"

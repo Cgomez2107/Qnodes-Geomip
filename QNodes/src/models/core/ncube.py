@@ -129,16 +129,10 @@ class NCube:
             marginable_axis = np.intersect1d(ejes, self.dims)
             if not marginable_axis.size:
                 return self
+            mask = np.isin(self.dims, marginable_axis)
             numero_dims = self.dims.size - 1
-            ejes_locales = tuple(
-                numero_dims - dim_idx
-                for dim_idx, axis in enumerate(self.dims)
-                if axis in marginable_axis
-            )
-            new_dims = np.array(
-                [d for d in self.dims if d not in marginable_axis],
-                dtype=np.int8,
-            )
+            ejes_locales = tuple(numero_dims - np.where(mask)[0])
+            new_dims = self.dims[~mask].copy()
             self.memo[tuple(ejes)] = (
                 np.mean(self.data, axis=ejes_locales, keepdims=False),
                 new_dims,

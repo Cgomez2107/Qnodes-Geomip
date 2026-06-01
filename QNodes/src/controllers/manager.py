@@ -54,8 +54,10 @@ class Manager:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def cargar_red(self) -> np.ndarray:
-        dataset = np.genfromtxt(self.tpm_filename, delimiter=COLON_DELIM)
-        return dataset
+        npy_path = self.tpm_filename.with_suffix(".npy")
+        if npy_path.exists():
+            return np.load(npy_path)
+        return np.genfromtxt(self.tpm_filename, delimiter=COLON_DELIM)
 
     def generar_red(self, dimensiones: int, datos_deterministas: bool = True) -> str:
         """
