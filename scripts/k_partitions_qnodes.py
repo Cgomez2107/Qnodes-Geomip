@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+K-Particiones recursivas (k=3,4,5) usando QNodes.
+Columnas:
+  K=3: P(16)=Particion Q(17)=Phi R(18)=Tiempo
+  K=4: V(22)=Particion W(23)=Phi X(24)=Tiempo
+  K=5: AB(28)=Particion AC(29)=Phi AD(30)=Tiempo
+
+Uso:
+    uv run --directory QNodes python scripts/k_partitions_qnodes.py --all
+    uv run --directory QNodes python scripts/k_partitions_qnodes.py --sheet "10A-Elementos"
+"""
+
+import sys, io, os, re, time, shutil, argparse
+from pathlib import Path
+
+sys.setrecursionlimit(10000)
+os.environ["FORCE_COLOR"] = "0"
+os.environ["PYTHONIOENCODING"] = "utf-8"
+import warnings
+warnings.filterwarnings("ignore")
+verbose = True
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+PROYECTO = SCRIPTS_DIR.resolve().parent
+QNODES_SRC = (PROYECTO / "QNodes" / "src").resolve()
+sys.path.insert(0, str(SCRIPTS_DIR))
+sys.path.insert(0, str(QNODES_SRC))
+sys.path.insert(0, str(PROYECTO / "QNodes"))
+
+import openpyxl
+from openpyxl.styles import PatternFill
+from utils.converter import excel_a_bits
+
+import numpy as np
+from src.strategies.q_nodes import QNodes as QNodesStrategy
+from src.models.base.application import aplicacion as q_app
+from src.funcs.iit import emd_efecto
+from src.models.core.system import System
+
+EXCEL_FILE = PROYECTO / "DatosPruebas2026_1 (1).xlsx"
+QNODES_SAMPLES = QNODES_SRC / ".samples"
+N_PRUEBAS = 10
+
+SHEETS = {
+    "10A-Elementos": {"n_nodos": 10, "pagina": "A"},
+    "15B-Elementos": {"n_nodos": 15, "pagina": "B"},
+    "20A-Elementos": {"n_nodos": 20, "pagina": "A"},
+    "22A-Elementos": {"n_nodos": 22, "pagina": "A"},
+    "25A-Elementos ": {"n_nodos": 25, "pagina": "A"},
+}
+
+COLUMNAS = {
+    3: (16, 17, 18),
+    4: (22, 23, 24),
+    5: (28, 29, 30),
+}
+
+def restarts_para_n(n_nodos):
+    if n_nodos <= 10: return 5
+    if n_nodos <= 15: return 3
+    if n_nodos <= 20: return 3
+    return 1
+
+def parse_partition(part_str: str):
+    lines = part_str.strip().split("\n")
+    top_line = lines[0]
+
+    if "||" in top_line:
+        parts = top_line.split("||")
+    elif "\u239e\u239b" in top_line:
+        parts = top_line.split("\u239e\u239b")
+        parts[0] = parts[0].lstrip("\u239b").rstrip("\u239e")
+        parts[1] = parts[1].lstrip("\u239b").rstrip("\u239e")
+    else:
+        return [], []
+
+    def extract(s):
+        result = []
+        for c in s:
+            if c.isalpha() and c.isupper():
+                result.append(ord(c) - ord("A"))
+        return result
+
+    return extract(parts[0]), extract(parts[1])
+
+def alcance_mec_para_grupo(grupo: list[int], alc_orig: str, mec_orig: str, N: int):
+    bits = ["0"] * N
+    for i in grupo:
+        bits[i] = alc_orig[i]
+    alc_grupo = "".join(bits)
+    bits = ["0"] * N
+    for i in grupo:
+        bits[i] = mec_orig[i]
+    mec_grupo = "".join(bits)
+    return alc_grupo, mec_grupo
+
+def fmt_subsistemas(subsystems: list[list[int]]) -> str:
+    groups = []
+    for group in subsystems:
+        labels = [chr(ord("A") + i) for i in sorted(group)]
+        groups.append(",".join(labels))
+    return " | ".join(groups)
+
+def preparar_sistema(tpm, estado_inicial, cond_orig, alc_orig, mec_orig):
+    estado_arr = np.array([int(c) for c in estado_inicial], dtype=np.int8)
+    system = System(tpm, estado_arr)
+    cond_dims = np.array([i for i, c in enumerate(cond_orig) if c == "0"], dtype=np.int8)
+    conditioned = system.condicionar(cond_dims)
+    alc_remove = np.array([i for i, c in enumerate(alc_orig) if c == "0"], dtype=np.int8)
+    mec_remove = np.array([i for i, c in enumerate(mec_orig) if c == "0"], dtype=np.int8)
+    preprocessed = conditioned.substraer(alc_remove, mec_remove)
+    original_marginal = preprocessed.distribucion_marginal()
+    return preprocessed, original_marginal
+
+def calcular_phi_k(preprocessed, original_marginal, subsystems):
+    k_marginal = np.zeros_like(original_marginal)
+    for node_list in subsystems:
+        remove_alc = np.array(
+            [i for i in preprocessed.indices_ncubos if i not in set(node_list)],
+            dtype=np.int8,
+        )
+        remove_dims = (
+            np.array([i for i in preprocessed.ncubos[0].dims if i not in set(node_list)], dtype=np.int8)
+            if len(preprocessed.ncubos) > 0 else np.array([], dtype=np.int8)
+        )
+        sub = preprocessed.substraer(remove_alc, remove_dims)
+        sub_marginal = sub.distribucion_marginal()
+        for j, idx in enumerate(sub.indices_ncubos):
+            pos = np.where(preprocessed.indices_ncubos == idx)[0][0]
+            k_marginal[pos] = sub_marginal[j]
+    return float(emd_efecto(k_marginal, original_marginal))
+
+def post_optimizar(subsystems, preprocessed, original_marginal, n_nodos):
+    if n_nodos > 15:
+        return subsystems
+    subsystems = [list(g) for g in subsystems]
+    changed = True
+    while changed:
+        changed = False
+        current_phi = calcular_phi_k(preprocessed, original_marginal, subsystems)
+        for i in range(len(subsystems)):
+            for node in list(subsystems[i]):
+                best_phi = current_phi
+                best_target = i
+                for j in range(len(subsystems)):
+                    if i == j: continue
+                    new_systems = [list(g) for g in subsystems]
+                    new_systems[i].remove(node)
+                    new_systems[j].append(node)
+                    new_phi = calcular_phi_k(preprocessed, original_marginal, new_systems)
+                    if new_phi < best_phi - 1e-12:
+                        best_phi = new_phi
+                        best_target = j
+                if best_target != i:
+                    subsystems[i].remove(node)
+                    subsystems[best_target].append(node)
+                    current_phi = best_phi
+                    changed = True
+    return subsystems
+
+def resolver_k_particiones_qnodes(
+    tpm, estado_inicial, pagina, N, k, cond_orig, alc_orig, mec_orig,
+    restarts=5, verbose=False
+):
+    cond_dims_i = set(i for i, c in enumerate(cond_orig) if c == "0")
+    all_alc = set(i for i, c in enumerate(alc_orig) if c == "1")
+    all_mec = set(i for i, c in enumerate(mec_orig) if c == "1")
+    effective_nodes = sorted(all_alc - cond_dims_i)
+
+    if not effective_nodes:
+        if verbose: print(f"    No hay nodos efectivos")
+        return [], []
+
+    if k > len(effective_nodes):
+        if verbose: print(f"    k={k} > nodos efectivos={len(effective_nodes)}")
+        k = len(effective_nodes)
+
+    subsystems = [effective_nodes]
+    steps = []
+
+    for iteration in range(k - 1):
+        t0_iter = time.time()
+        largest_idx = max(range(len(subsystems)), key=lambda i: len(subsystems[i]))
+        largest = subsystems[largest_idx]
+        if len(largest) <= 1:
+            if verbose: print(f"    No se puede seguir dividiendo")
+            break
+
+        alc, mec = alcance_mec_para_grupo(largest, alc_orig, mec_orig, N)
+
+        q_app.pagina_red_muestra = pagina
+        q_app.profiler_habilitado = False
+        qnodes = QNodesStrategy(tpm)
+        qnodes.restarts = restarts
+        sol = qnodes.aplicar_estrategia(estado_inicial, cond_orig, alc, mec)
+
+        g1, g2 = parse_partition(sol.particion)
+
+        if not g1 or not g2:
+            l = sorted(largest)
+            mid = len(l) // 2
+            g1, g2 = l[:mid], l[mid:]
+
+        subsystems.pop(largest_idx)
+        subsystems.append(g1)
+        subsystems.append(g2)
+        steps.append((largest, g1, g2, float(sol.perdida)))
+
+        if verbose:
+            print(f"    Split {iteration+1}/{k-1}: phi={sol.perdida:.6f} t={time.time()-t0_iter:.2f}s")
+
+    return subsystems, steps
+
+def resolver_tpm(n_nodos: int, pagina: str) -> Path:
+    path = QNODES_SAMPLES / f"N{n_nodos}{pagina}.csv"
+    if path.exists():
+        return path
+    path = PROYECTO / "GeoMIP" / "data" / "samples" / f"N{n_nodos}{pagina}.csv"
+    if path.exists():
+        return path
+    raise FileNotFoundError(f"No se encontro N{n_nodos}{pagina}.csv")
+
+def procesar_hoja(sheet_name, config, k_values):
+    n_nodos = config["n_nodos"]
+    pagina = config["pagina"]
+    restarts = restarts_para_n(n_nodos)
+
+    print(f"\n{'='*70}")
+    print(f"  QNODES - {sheet_name} ({n_nodos} nodos, pagina {pagina.upper()})")
+    print(f"  k={k_values}  restarts={restarts}")
+    print(f"  Columnas: P-R(k=3) | V-X(k=4) | AB-AD(k=5)")
+    print(f"{'='*70}")
+
+    print(f"\n  --- Leyendo {N_PRUEBAS} pruebas desde Excel ---")
+    try:
+        wb = openpyxl.load_workbook(str(EXCEL_FILE), data_only=False)
+        ws = wb[sheet_name]
+        pruebas = []
+        for fila in range(6, 6 + N_PRUEBAS):
+            alcance = ws[f"B{fila}"].value
+            mecanismo = ws[f"C{fila}"].value
+            if alcance and mecanismo:
+                pruebas.append({"fila": fila, "alcance": str(alcance).strip(), "mecanismo": str(mecanismo).strip()})
+        wb.close()
+        print(f"  Leidas {len(pruebas)} pruebas")
+    except Exception as e:
+        print(f"  ERROR leyendo Excel: {e}")
+        return
+
+    tpm_path = resolver_tpm(n_nodos, pagina)
+    if tpm_path.suffix == ".npy":
+        tpm = np.load(tpm_path)
+    else:
+        tpm = np.genfromtxt(tpm_path, delimiter=",")
+    print(f"  TPM cargado: {tpm_path.name} ({tpm.shape})")
+
+    buffer_resultados = []
+
+    for idx, p in enumerate(pruebas, 1):
+        alcance_bits = excel_a_bits(p["alcance"], n_nodos)
+        mecanismo_bits = excel_a_bits(p["mecanismo"], n_nodos)
+        estado_inicial = "1" + "0" * (n_nodos - 1)
+        condiciones = "1" * n_nodos
+
+        print(f"\n  >>> PRUEBA {idx}/{N_PRUEBAS} (fila {p['fila']}) <<<")
+        print(f"      alcance={p['alcance']}  mecanismo={p['mecanismo']}")
+
+        t0_sistema = time.time()
+        preprocessed, original_marginal = preparar_sistema(tpm, estado_inicial, condiciones, alcance_bits, mecanismo_bits)
+        t_prep = time.time() - t0_sistema
+        if verbose:
+            print(f"      Sistema preparado en {t_prep:.2f}s")
+
+        for k_val in k_values:
+            if k_val > n_nodos:
+                print(f"      k={k_val}: saltando (N={n_nodos})")
+                continue
+
+            print(f"      --- k={k_val} ---")
+            try:
+                inicio = time.time()
+                subsystems, steps = resolver_k_particiones_qnodes(
+                    tpm, estado_inicial, pagina, n_nodos, k_val,
+                    condiciones, alcance_bits, mecanismo_bits,
+                    restarts=restarts, verbose=True,
+                )
+
+                if subsystems:
+                    subsystems = post_optimizar(subsystems, preprocessed, original_marginal, n_nodos)
+                    phi_k = calcular_phi_k(preprocessed, original_marginal, subsystems)
+                else:
+                    phi_k = 0.0
+
+                wall_clock = time.time() - inicio
+                part_str = fmt_subsistemas(subsystems) if subsystems else ""
+                print(f"      phi_{k_val}={phi_k:.10f}  t={wall_clock:.2f}s")
+                print(f"      Particion: {part_str}")
+                buffer_resultados.append((p["fila"], k_val, part_str, phi_k, wall_clock))
+            except Exception as e:
+                print(f"      [ERROR] k={k_val}: {type(e).__name__}: {e}")
+
+    t0_guardar = time.time()
+    try:
+        wb = openpyxl.load_workbook(str(EXCEL_FILE), data_only=False)
+        ws = wb[sheet_name]
+        ok_fill = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
+        for fila, k_val, part_str, phi, tiempo in buffer_resultados:
+            col_info = COLUMNAS.get(k_val)
+            if col_info:
+                ws.cell(row=fila, column=col_info[0], value=str(part_str))
+                ws.cell(row=fila, column=col_info[1], value=float(phi))
+                ws.cell(row=fila, column=col_info[2], value=float(tiempo))
+                for col in col_info:
+                    ws.cell(row=fila, column=col).fill = ok_fill
+        wb.save(str(EXCEL_FILE))
+        wb.close()
+        print(f"  Guardados {len(buffer_resultados)} resultados en Excel ({time.time()-t0_guardar:.1f}s)")
+    except Exception as e:
+        print(f"  ERROR guardando Excel: {e}")
+
+    print(f"\n  --- QNODES {sheet_name} COMPLETADO ---")
+
+def main():
+    parser = argparse.ArgumentParser(description="K-Particiones con QNodes")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--sheet", type=str, help="Nombre de la hoja")
+    group.add_argument("--all", action="store_true", help="Todas las hojas")
+    parser.add_argument("--k", type=int, nargs="+", default=[3, 4, 5])
+    parser.add_argument("--restarts", type=int, default=0, help="0=auto segun N")
+    args = parser.parse_args()
+
+    global verbose
+    verbose = True
+
+    print("=" * 70)
+    print("  K-PARTICIONES - QNODES")
+    print("  k={}  restarts={} (0=auto)".format(",".join(str(v) for v in args.k),
+          "auto" if args.restarts == 0 else str(args.restarts)))
+    print("  Columnas: P=Part3 Q=Phi3 R=Time3 | V=Part4 W=Phi4 X=Time4 | AB=Part5 AC=Phi5 AD=Time5")
+    print("  Optimizaciones: cache phi_k + buffer Excel + post-optimizacion + params adaptativos")
+    print("=" * 70)
+
+    backup = PROYECTO / f"BACKUP_{Path(EXCEL_FILE).name}"
+    if not backup.exists():
+        shutil.copy(str(EXCEL_FILE), str(backup))
+        print(f"\n  Backup creado: {backup.name}")
+
+    if args.all:
+        hojas = list(SHEETS.items())
+    else:
+        sheet_name = args.sheet
+        for k in SHEETS:
+            if k.strip() == sheet_name.strip():
+                sheet_name = k; break
+        else:
+            print(f"ERROR: Hoja '{sheet_name}' no valida. Opciones: {list(SHEETS.keys())}")
+            sys.exit(1)
+        hojas = [(sheet_name, SHEETS[sheet_name])]
+
+    for sheet_name, config in hojas:
+        procesar_hoja(sheet_name, config, args.k)
+
+if __name__ == "__main__":
+    main()

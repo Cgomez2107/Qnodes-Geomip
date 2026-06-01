@@ -1,0 +1,38 @@
+@startuml KQGMIP_Flujo
+!theme plain
+
+start
+:Leer configuración\n(hoja, k_values, params);
+:Leer pruebas desde Excel\n(10 pruebas con alcance/mecanismo);
+:Preparar sistema base\nSystem → condicionar → substraer\n→ distribucion_marginal();
+
+while (Para cada prueba?) is (Sí)
+  while (Para cada k ∈ {3,4,5}?) is (Sí)
+    :Crear subsistema inicial\n(effective_nodes);
+    
+    while (split < k-1?) is (Sí)
+      :Elegir subsistema más grande;
+      :Extraer alcance/mec del grupo;
+      
+      if (Estrategia?) then (KQNodes)
+        :QNodesStrategy\n· restarts voraces\n· refinamiento 1-opt;
+      else (KGeoMIP)
+        :GeometricSIA\n· beam search\n· DP sobre estados;
+      endif
+      
+      :Parsear partición → g1, g2;
+      :Reemplazar grupo original\npor g1, g2;
+    while (No)
+    
+    if (N ≤ 15?) then (Sí)
+      :Post-optimizar\n· intercambio local\n· mover nodos entre grupos;
+    endif
+    
+    :Calcular φ_k\n· marginal por subsistema\n· EMD vs marginal original;
+    :Acumular en buffer;
+  while (No)
+endwhile (No)
+
+:Guardar todos los resultados\nen Excel (1 escritura);
+stop
+@enduml

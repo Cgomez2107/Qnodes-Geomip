@@ -68,4 +68,19 @@ QNodes/src/.samples/N20A.csv
 QNodes/src/.samples/N22A.csv
 QNodes/src/.samples/N25A.csv
 
+# Execution logs
+scripts/*.log
+
+# Backups
+BACKUP_*
+*.qnodes_backup
+
+# Transient test files
+scripts/test_import*.py
+scripts/test_manual.py
+scripts/cross_seed.py
+scripts/run_geometric.py
+QNodes/check_excel.py
+QNodes/nul
+
 

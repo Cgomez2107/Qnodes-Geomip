@@ -1,0 +1,81 @@
+@startuml KQGMIP_Clases
+!theme plain
+
+class System {
+  - tpm: np.ndarray
+  - estado_inicio: np.ndarray
+  - ncubos: tuple[NCube]
+  - memo: dict (QNodes)
+  + condicionar(indices) → System
+  + substraer(alc_idx, mec_dims) → System
+  + bipartir(alcance, mecanismo) → System
+  + distribucion_marginal() → np.ndarray
+  + indices_ncubos: np.ndarray
+  + dims_ncubos: np.ndarray
+}
+
+class NCube {
+  - indices: list[int]
+  - dims: np.ndarray
+  - data: np.ndarray
+  + condicionar(indices, estado)
+  + marginalizar(dims)
+  + seleccionar_estado(estado)
+}
+
+class Solution {
+  + estrategia: str
+  + perdida: float
+  + particion: str
+  + tiempo_total: float
+  + distribucion_subsistema
+  + distribucion_particion
+}
+
+abstract class SIA {
+  # pagina_sample_network: str
+  # profiler_habilitado: bool
+  + {abstract} aplicar_estrategia(estado, cond, alc, mec) → Solution
+  # sia_preparar_subsistema(estado, cond, alc, mec) → System
+}
+
+class QNodes {
+  + restarts: int
+  - memoria_delta: dict
+  - memoria_grupo: dict
+  - clave_submodular: list
+  + aplicar_estrategia()
+  - funcion_submodular(deltas, omegas)
+  - refinar_particion(clave)
+  - evaluar_emd_particion(clave)
+}
+
+class GeometricSIA {
+  + beam_width: int
+  - tabla_transiciones: dict
+  - caminos: dict
+  - memoria_particiones: dict
+  + aplicar_estrategia(cond, alc, mec, tpm, timeout)
+  - find_mip(timeout)
+  - identificar_particiones_optimas()
+  - calcular_costo()
+}
+
+class Runner {
+  + preparar_sistema(tpm, estado, cond, alc, mec) → (System, marginal)
+  + resolver_k_particiones(tpm, estado, ...) → (subsystems, steps)
+  + post_optimizar(subsystems) → subsystems
+  + calcular_phi_k(preprocessed, original, subsystems) → float
+  + procesar_hoja(sheet, config, k_values)
+}
+
+SIA <|-- QNodes
+SIA <|-- GeometricSIA
+System *-- NCube
+QNodes --> Solution
+GeometricSIA --> Solution
+Runner --> System
+Runner --> QNodes
+Runner --> GeometricSIA
+Runner --> Solution
+@enduml

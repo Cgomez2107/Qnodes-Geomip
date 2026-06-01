@@ -1,0 +1,58 @@
+@startuml KQGMIP_Arquitectura
+!theme plain
+
+package "scripts (Orquestación)" {
+  [k_partitions_qnodes.py] as QN_RUN
+  [k_partitions.py] as GM_RUN
+  [analisis_resultados.py] as ANAL
+  [utils/converter.py] as CONV
+  [utils/excel_handler.py] as XL
+  [utils/tpm_loader.py] as TPM
+}
+
+package "KQNodes (QNodes/)" {
+  [QNodesStrategy\n(q_nodes.py)] as QN_STRAT
+  [System\n(models/core/system.py)] as QN_SYS
+  [emd_efecto\n(funcs/iit.py)] as QN_EMD
+  [NCube] as QN_CUBE
+  [Solution] as QN_SOL
+}
+
+package "KGeoMIP (GeoMIP/)" {
+  [GeometricSIA\n(geometric.py)] as GM_STRAT
+  [System\n(models/core/system.py)] as GM_SYS
+  [emd_efecto\n(funcs/base.py)] as GM_EMD
+  [NCube] as GM_CUBE
+  [Solution] as GM_SOL
+}
+
+package "Datos" {
+  [DatosPruebas2026_1.xlsx] as XL_FILE
+  [TPM Samples\n(.samples/)] as TPM_DIR
+}
+
+QN_RUN --> CONV : convierte bits
+QN_RUN --> XL : lee/escribe
+QN_RUN --> TPM : carga TPM
+QN_RUN --> XL_FILE
+QN_RUN --> TPM_DIR
+QN_RUN --> QN_STRAT : aplicar_estrategia()
+QN_STRAT --> QN_SYS : condicionar/substraer
+QN_STRAT --> QN_EMD : evaluar φ
+QN_SYS --> QN_CUBE : manipula cubos
+QN_STRAT --> QN_SOL : retorna
+
+GM_RUN --> CONV
+GM_RUN --> XL
+GM_RUN --> TPM
+GM_RUN --> XL_FILE
+GM_RUN --> TPM_DIR
+GM_RUN --> GM_STRAT : aplicar_estrategia()
+GM_STRAT --> GM_SYS
+GM_STRAT --> GM_EMD
+GM_SYS --> GM_CUBE
+GM_STRAT --> GM_SOL
+
+QN_RUN ..|> GM_RUN : misma estructura de\norquestación
+
+@enduml
