@@ -107,4 +107,8 @@ QNodes/check_excel.py
 QNodes/nul
 GeoMIP/src/Method2_Dynamic_Programming_Reformulation/test_manual.py
 
+# Word temp files
+~$*
+_docx_*.txt
+
 
